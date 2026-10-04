@@ -1,0 +1,56 @@
+/* -------------------------------------------------- */
+/*  CENTER TITLE, AUTHOR, DATE                        */
+/* -------------------------------------------------- */
+h1.title {
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+h4.author, h4.date {
+  text-align: center;
+  margin-top: 0px;
+}
+
+/* -------------------------------------------------- */
+/*  TABLE OF CONTENTS TITLE ("Contents")              */
+/*  Same size & style as ### subtitle (h3)            */
+/* -------------------------------------------------- */
+#TOC:before {
+  content: "Contents";
+  display: block;
+  font-size: 20px;        /* tama??o similar a h3 */
+  font-weight: bold;
+  color: black;           /* negro, profesional */
+  margin-bottom: 5px;
+  margin-top: 10px;
+}
+
+/* -------------------------------------------------- */
+/*  TOC LINKS STYLE                                   */
+/* -------------------------------------------------- */
+#TOC a {
+  color: #1C4E80 !important;   /* azul oscuro elegante */
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+#TOC a:hover {
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------- */
+/*  CLEAN LIST (no bullets)                           */
+/* -------------------------------------------------- */
+#TOC ul {
+  list-style-type: none;
+  padding-left: 0;
+}
+
+/* -------------------------------------------------- */
+/*  SPACING AROUND TOC                                */
+/* -------------------------------------------------- */
+#TOC {
+  margin-top: 15px;
+  margin-bottom: 25px;
+}

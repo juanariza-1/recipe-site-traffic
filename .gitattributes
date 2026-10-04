@@ -1,0 +1,8 @@
+* text=auto
+*.R text eol=lf
+*.Rmd text eol=lf
+*.md text eol=lf
+*.html -text
+*.csv -text
+*.png -text
+*.pdf -text

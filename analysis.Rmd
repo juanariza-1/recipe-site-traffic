@@ -1,0 +1,1391 @@
+---
+title: "Predicting High Recipe Site Traffic"
+author: "Juan Esteban Londoño, Juan Pablo Ariza, Milan Goossens"
+date: "2026-01-09"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    number_sections: false
+    css: styles.css
+  pdf_document:
+    toc: true
+    toc_depth: 4
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE
+)
+```
+
+#### **Introduction**
+
+Online platforms that rely on user-generated content often seek to understand which characteristics drive engagement and visibility. In the context of recipe websites, higher site traffic is particularly valuable, as it increases the likelihood that visitors convert into paying subscribers. Identifying the features of recipes that generate high traffic is therefore of direct practical relevance for content strategy and business decisions.
+
+This project analyzes data from a cooking recipe website with the objective of predicting whether a given recipe will generate high site traffic. The dataset contains nutritional information, recipe categories, serving sizes, and an indicator of whether the recipe was associated with high traffic on the website. While the dataset provides detailed nutritional breakdowns, other potentially relevant features, such as preparation time or ingredient complexity, are not observed. The response variable of interest is a binary indicator capturing whether site traffic was classified as high when the recipe was displayed.
+
+The analysis proceeds in several steps. First, the data are cleaned and prepared through systematic data wrangling, including variable recoding and treatment of missing values. This is followed by an exploratory data analysis to examine how recipe characteristics differ between high- and low-traffic outcomes. The dataset is then split into training and test sets, with cross-validation used where appropriate to assess model performance and select tuning parameters. Several predictive models are estimated, including a linear probability model, a logit model, and a Random Forest classifier. These models are compared in terms of variable importance and predictive performance using confusion matrices, ROC curves, and AUC measures. Finally, the preferred model is interpreted to identify the most important predictors of site traffic and to derive insights that could inform strategies aimed at increasing user engagement.
+
+#### **Data wrangling**
+
+```{r}
+library(tidyverse)
+library(GGally)
+library(ggplot2)
+library(tidymodels) 
+library(knitr)
+library(kableExtra)
+```
+
+
+```{r}
+traffic <- read_csv(
+  "data/recipe_site_traffic_2212.csv"
+)
+```
+
+```{r, include=FALSE}
+# we need to specify that this variable is a category for the ML models, put just numbers is a mistake
+
+traffic <- traffic %>%
+  mutate(category = as.factor(category))
+
+levels(traffic$category)
+
+# recode high_traffic
+
+traffic <- traffic %>%
+  mutate(
+    high_traffic_bin = ifelse(is.na(high_traffic), 0, 1)
+  )
+
+table(traffic$high_traffic_bin)
+
+sum(is.na(traffic$high_traffic_bin))
+
+# specify that servings is a number no a string
+
+unique(traffic$servings)
+
+traffic <- traffic %>%
+  mutate(servings = as.numeric(servings))
+
+# We gonna drop the lines with NA
+
+traffic %>%
+  mutate(
+    na_count = rowSums(is.na(select(., -high_traffic)))
+  ) %>%
+  summarise(
+    filas_con_algun_NA = sum(na_count > 0),
+    filas_sin_NA = sum(na_count == 0)
+  )
+
+traffic_clean <- traffic %>%
+  filter(
+    rowSums(is.na(select(., -high_traffic))) == 0
+  )
+
+dim(traffic)
+dim(traffic_clean)
+
+sum(is.na(select(traffic_clean, -high_traffic)))
+
+# We gonna work with this dataset "traffic_clean"
+
+traffic_clean <- traffic_clean %>%
+  select(-high_traffic)
+```
+
+**1. Recode of variables and data validity checks**
+
+Several variables were recoded to ensure consistency with their conceptual meaning and suitability for statistical and machine learning models. The variable _category_ was recoded as a factor to correctly represent the qualitative nature of recipe types. This transformation avoids imposing an artificial numerical ordering across categories and allows model coefficients to be interpreted relative to a reference category.
+
+The response variable _high_traffic_ was recoded into a binary indicator, _high_traffic_bin_, taking the value one when traffic was classified as High and zero otherwise. The original variable only explicitly labels high traffic events, while all remaining observations are missing. We therefore interpret missing values as low traffic, under the assumption that only high traffic events are explicitly recorded in the data. As a result, all observations labeled as High were correctly recoded as one, while observations without an explicit label were coded as zero. The resulting binary outcome variable is consistent, complete, and suitable for classification analysis.
+
+Finally, the variable _servings_ was converted from character to numeric format to ensure correct interpretation as a quantitative measure. A small number of missing values were already present in this variable and were preserved during the conversion process.
+
+**2. Treatment of missing values and assessment of outcome distortion**
+
+Missing values were assessed across all explanatory variables, excluding the outcome variable _high_traffic_, which was treated separately as described above. Several observations contain missing nutritional information, such as calories. To address this issue, observations with missing values in any explanatory variable were removed, resulting in a dataset consisting exclusively of complete cases for the variables used in the analysis.
+
+Excluding the outcome variable, only 55 observations, corresponding to approximately 6 percent of the original sample, contained missing values in the explanatory variables. Given the relatively small proportion of incomplete observations, the removal of these cases is unlikely to substantially distort the results. This conclusion is further supported by the stability of the outcome distribution after cleaning, indicating that the proportion of high and low traffic recipes remains effectively unchanged.
+
+The final cleaned dataset therefore provides a reliable and internally consistent basis for exploratory analysis and subsequent model estimation.
+
+```{r}
+traffic_clean %>%
+  head(10) %>%   # solo primeras 10 filas
+  kable(
+    caption = "Table 1. Final dataset after data wrangling",
+    digits = 2
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+```
+
+#### **Exploratory Data Analysis (EDA)**
+
+Before estimating predictive models, an exploratory data analysis is conducted to gain insight into the structure of the data and the relationship between recipe characteristics and site traffic. This step aims to examine how each covariate differs between high- and low-traffic recipes, identify potential patterns or separation between outcome groups, and detect distributional features such as skewness, outliers, or strong correlations among variables. Visual tools are used to compare distributions across outcome categories. The results of this exploratory analysis help guide model specification and provide an initial assessment of which features may be most informative for predicting high site traffic.
+
+To ensure that the cleaned dataset is suitable for group comparisons, we first examine its size and the distribution of the outcome variable. In particular, we verify the number of observations and the proportion of high-traffic recipes, which provides a baseline understanding of the classification problem.
+
+**1. Outcome Distribution**
+
+The following table summarizes the distribution of the outcome variable, distinguishing between low-traffic and high-traffic recipes. It reports both the absolute number of observations in each group and their corresponding shares in the sample.
+
+As in the next table, high-traffic recipes represent approximately 60 percent of the dataset, while the remaining 40 percent correspond to low-traffic recipes. This indicates a moderate class imbalance, which is unlikely to pose severe difficulties for standard classification methods, but should nonetheless be taken into account when evaluating model performance.
+
+```{r}
+traffic_clean %>%
+  count(high_traffic_bin) %>%
+  mutate(
+    share = n / sum(n),
+    share_pct = scales::percent(share, accuracy = 0.1)
+  ) %>%
+  select(Traffic_level = high_traffic_bin,
+         Count = n,
+         Share = share_pct) %>%
+  kable(
+    caption = "Table 2. Distribution of the outcome variable (high_traffic_bin)"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+**2. Summary statistics (overall)**
+
+The following table presents summary statistics for the numerical covariates in the cleaned dataset, including measures of central tendency and dispersion. Specifically, it reports the minimum, first quartile, median, mean, third quartile, and maximum for calories, carbohydrate, sugar, protein, and servings. These statistics provide an overview of the distribution of nutritional characteristics across all recipes and highlight substantial variation in both nutritional content and portion size. In particular, the differences between medians and means, as well as the wide ranges observed for several variables, suggest the presence of skewed distributions and potential outliers, which motivates the use of graphical tools in the subsequent analysis to further examine distributional differences across traffic levels.
+
+```{r}
+traffic_clean %>%
+  summarise(
+    across(
+      c(calories, carbohydrate, sugar, protein, servings),
+      list(
+        Min    = ~min(.x, na.rm = TRUE),
+        P25    = ~quantile(.x, 0.25, na.rm = TRUE),
+        Median = ~median(.x, na.rm = TRUE),
+        Mean   = ~mean(.x, na.rm = TRUE),
+        P75    = ~quantile(.x, 0.75, na.rm = TRUE),
+        Max    = ~max(.x, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Variable", "Statistic"),
+    names_sep = "_",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(
+    names_from = Statistic,
+    values_from = Value
+  ) %>%
+  mutate(
+    Variable = recode(
+      Variable,
+      calories = "Calories",
+      carbohydrate = "Carbohydrate",
+      sugar = "Sugar",
+      protein = "Protein",
+      servings = "Servings"
+    )
+  ) %>%
+  kable(
+    caption = "Table 3. Summary statistics for numerical covariates (overall)",
+    digits = 2
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+**3. Summary statistics by traffic level**
+
+The following table reports summary statistics for the numerical covariates separately for low-traffic and high-traffic recipes. By presenting means, standard deviations, and medians for each group, this table allows for a direct comparison of nutritional characteristics and serving sizes across traffic levels. This group-wise summary provides an initial indication of how recipe features differ between outcomes and motivates the subsequent graphical analysis of distributional differences.
+
+```{r}
+traffic_clean %>%
+  group_by(high_traffic_bin) %>%
+  summarise(
+    n = n(),
+    across(
+      c(calories, carbohydrate, sugar, protein, servings),
+      list(
+        Mean   = ~mean(.x, na.rm = TRUE),
+        SD     = ~sd(.x, na.rm = TRUE),
+        Median = ~median(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  ) %>%
+  rename(Traffic_level = high_traffic_bin, N = n) %>%
+  pivot_longer(
+    cols = -c(Traffic_level, N),
+    names_to = c("Variable", "Statistic"),
+    names_sep = "_",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(
+    names_from = Statistic,
+    values_from = Value
+  ) %>%
+  mutate(
+    Variable = recode(
+      Variable,
+      calories = "Calories",
+      carbohydrate = "Carbohydrate",
+      sugar = "Sugar",
+      protein = "Protein",
+      servings = "Servings"
+    )
+  ) %>%
+  arrange(Traffic_level, Variable) %>%
+  kable(
+    caption = "Table 4. Summary statistics by traffic level",
+    digits = 2
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+**4. Histograms**
+
+The figure below presents histograms of the main numerical covariates, comparing their distributions between low-traffic and high-traffic recipes. For most nutritional variables, both groups exhibit strongly right-skewed distributions, indicating that the majority of recipes have relatively low values, while a small number of observations display very high nutritional content.
+
+For _calories_, high-traffic recipes tend to show a slightly higher concentration at moderate and high values compared to low-traffic recipes, suggesting that more calorie-dense recipes may attract greater user attention. A similar pattern is observed for _carbohydrates_ and _protein_, where the distribution for high-traffic recipes appears marginally shifted to the right, indicating higher average nutritional content relative to low-traffic recipes.
+
+In contrast, the distribution of _sugar_ shows substantial overlap between the two groups, with no clear visual separation. This suggests that sugar content alone may not strongly differentiate high-traffic from low-traffic recipes. Finally, _servings_ displays a discrete distribution, reflecting the limited number of possible portion sizes. High-traffic recipes appear more frequently associated with larger serving sizes, although differences across traffic levels remain moderate.
+
+Overall, while there is considerable overlap between the distributions of high- and low-traffic recipes across all variables, the histograms provide initial evidence that higher values of calories, carbohydrates, and protein may be more common among high-traffic recipes.
+
+```{r}
+traffic_long <- traffic_clean %>%
+  select(
+    high_traffic_bin,
+    calories,
+    carbohydrate,
+    sugar,
+    protein,
+    servings
+  ) %>%
+  pivot_longer(
+    cols = -high_traffic_bin,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+ggplot(
+  traffic_long,
+  aes(
+    x = value,
+    fill = factor(high_traffic_bin)
+  )
+) +
+  geom_histogram(
+    bins = 30,
+    position = "identity",
+    alpha = 0.4
+  ) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  scale_fill_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  labs(
+    title = "Histograms of Covariates by Traffic Level",
+    subtitle = "Comparison between high- and low-traffic recipes",
+    x = NULL,
+    y = "Count",
+    fill = "Traffic level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+**5. Density plots**
+
+The figure below displays kernel density estimates for the main numerical covariates, comparing the smoothed distributions of low-traffic and high-traffic recipes. Unlike histograms, kernel density plots provide a clearer view of the overall shape of the distributions and facilitate a more precise comparison between outcome groups across the full range of each variable.
+
+For _calories_, _carbohydrates_, _protein_, and _sugar_, the density curves for high-traffic and low-traffic recipes largely overlap, confirming that the distributions are highly skewed and that differences between groups are relatively modest. High-traffic recipes exhibit slightly higher density at moderate values for _calories_ and _protein_, while _sugar_ content shows nearly identical distributions across traffic levels. The distribution of _servings_ remains discrete and multimodal, reflecting common portion sizes, with only minor differences between high- and low-traffic recipes. Overall, these density plots suggest that no single nutritional variable provides a clear separation between outcome groups on its own.
+
+```{r}
+ggplot(
+  traffic_long,
+  aes(
+    x = value,
+    colour = factor(high_traffic_bin),
+    linetype = factor(high_traffic_bin)
+  )
+) +
+  geom_density(linewidth = 1) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  scale_colour_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  scale_linetype_manual(
+    values = c("0" = "solid", "1" = "longdash"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  labs(
+    title = "Kernel Density Estimates by Traffic Level",
+    subtitle = "Smoothed distribution of covariates for high- vs low-traffic recipes",
+    x = NULL,
+    y = "Density",
+    colour = "Traffic level",
+    linetype = "Traffic level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+**6. Box plots**
+
+The figure below presents boxplots of the main numerical covariates by traffic level, summarizing differences in medians, interquartile ranges, and the presence of outliers between low-traffic and high-traffic recipes. Boxplots provide a compact comparison of central tendency and dispersion, allowing for a clearer assessment of distributional differences that may not be evident from histograms or density plots alone.
+
+For _calories_, _carbohydrates_, and _protein_, high-traffic recipes exhibit slightly higher medians compared to low-traffic recipes, along with a wider spread and a greater number of high-value outliers. This suggests that recipes associated with higher traffic tend to be more nutritionally dense, although the overlap between groups remains substantial. In contrast, _sugar_ shows very similar medians and interquartile ranges across traffic levels, indicating limited differentiation between outcomes. The distribution of servings is highly comparable for both groups, with nearly identical medians and ranges, suggesting that portion size alone does not strongly distinguish high-traffic from low-traffic recipes. Overall, the boxplots confirm that while some nutritional variables show modest shifts across traffic levels, no single covariate provides a clear separation between outcome groups.
+
+```{r}
+ggplot(
+  traffic_long,
+  aes(
+    x = factor(high_traffic_bin),
+    y = value,
+    fill = factor(high_traffic_bin)
+  )
+) +
+  geom_boxplot(width = 0.7, outlier.alpha = 0.4) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  scale_x_discrete(labels = c("0" = "Low traffic", "1" = "High traffic")) +
+  scale_fill_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  labs(
+    title = "Boxplots of Covariates by Traffic Level",
+    subtitle = "Median, interquartile range, and outliers by outcome group",
+    x = NULL,
+    y = NULL,
+    fill = "Traffic level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+**6. EDA for category (bar plots)**
+
+The categorical variable _recipe category_ requires a separate graphical analysis, as its qualitative nature makes standard distributional tools such as histograms, density plots, or boxplots inappropriate. Instead, the figure below presents the within-category proportion of low- and high-traffic recipes, allowing for a direct comparison of outcome shares across recipe types rather than absolute counts.
+
+The bar chart reveals substantial heterogeneity in the share of high-traffic recipes across categories. Categories such as _Vegetable_, _Potato_, _Pork_, and _One Dish Meal_ display a relatively high proportion of high-traffic outcomes, whereas categories like _Beverages_, _Breakfast_, and _Chicken_ are predominantly associated with low traffic. These differences suggest that recipe category is a potentially important predictor of site traffic, as certain types of recipes are systematically more likely to attract user attention. This categorical pattern cannot be captured by numerical covariates alone.
+
+```{r}
+ggplot(
+  traffic_clean,
+  aes(
+    x = category,
+    fill = factor(high_traffic_bin)
+  )
+) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Share of High-Traffic Recipes by Category",
+    subtitle = "Within-category proportions of low vs high traffic outcomes",
+    x = "Recipe category",
+    y = "Proportion of recipes",
+    fill = "Traffic level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+**7. Correlations**
+
+The figure below illustrates pairwise relationships among the main numerical covariates, using log-transformed values for nutritional variables while keeping _servings_ in levels. The diagonal panels show the marginal distributions by traffic level, the lower panels display scatter plots, and the upper panels report correlation coefficients for the full sample as well as separately for low-traffic and high-traffic recipes. Overall, correlations across variables are relatively weak to moderate, indicating limited linear dependence among covariates.
+
+_Calories_ and _protein_ exhibit a positive correlation, suggesting that more calorie-dense recipes tend to contain higher _protein content_, with this relationship being slightly stronger for high-traffic recipes. Sugar shows a weak negative correlation with _protein_, particularly among low-traffic recipes, while its correlations with _calories_ and _carbohydrates_ are small and close to zero. The relationship between _carbohydrates_ and _calories_ is also weak, indicating that caloric content is not driven solely by _carbohydrates_. Finally, _servings display_ near-zero correlations with all nutritional variables, reflecting the discrete nature of portion sizes and suggesting independence from nutritional composition. Taken together, these results indicate that multicollinearity is unlikely to be a major concern and support the inclusion of all numerical covariates in subsequent multivariate models.
+
+```{r, fig.width=18, fig.height=9, out.width='100%', fig.align='center'}
+# Pairwise plot (same data prep as before)
+traffic_pairs <- traffic_clean %>%
+  mutate(
+    log_calories      = log1p(calories),
+    log_carbohydrate  = log1p(carbohydrate),
+    log_sugar         = log1p(sugar),
+    log_protein       = log1p(protein)
+  )
+
+traffic_pairs_labeled <- traffic_pairs %>%
+  rename(
+    Calories     = log_calories,
+    Carbohydrate = log_carbohydrate,
+    Sugar        = log_sugar,
+    Protein      = log_protein,
+    Servings     = servings
+  )
+
+p_pairs_log <- ggpairs(
+  traffic_pairs_labeled %>%
+    select(high_traffic_bin, Calories, Carbohydrate, Sugar, Protein, Servings),
+  columns = 2:6,
+  mapping = aes(
+    colour = factor(high_traffic_bin),
+    fill   = factor(high_traffic_bin)
+  ),
+  upper = list(
+    continuous = wrap("cor", size = 5)   # coherente, no exagerado
+  ),
+  lower = list(
+    continuous = wrap(
+      "points",
+      alpha = 0.20,
+      size = 0.9,
+      stroke = 0.4,
+      position = position_jitter(width = 0.02, height = 0.02)
+    )
+  ),
+  diag = list(
+    continuous = wrap("densityDiag", alpha = 0.25)
+  )
+)
+
+p_pairs_log +
+  scale_colour_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  scale_fill_manual(
+    values = c("0" = "#1F4E79", "1" = "#B22222"),
+    labels = c("Low traffic", "High traffic")
+  ) +
+  ggtitle(
+    "Pairwise Relationships Among Numerical Covariates",
+    subtitle = "Nutrition variables in log scale; servings kept in levels"
+  ) +
+  labs(colour = "Traffic level", fill = "Traffic level") +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 20
+    ),
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 14
+    ),
+
+    legend.position = "top",
+    legend.title = element_text(size = 13),
+    legend.text  = element_text(size = 12),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 14
+    ),
+
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 12, r = 90, b = 12, l = 12)
+  )
+```
+
+#### **Training and Test Set**
+
+```{r, include=FALSE}
+traffic_clean <- traffic_clean %>%
+  mutate(
+    high_traffic_bin = factor(high_traffic_bin, levels = c(0, 1),
+                              labels = c("Low", "High"))
+  )
+
+table(traffic_clean$high_traffic_bin)
+
+set.seed(123)  # para reproducibilidad
+
+split_obj <- initial_split(
+  traffic_clean,
+  prop   = 0.80,                  # 80% train, 20% test
+  strata = high_traffic_bin        # mantiene proporción de High/Low en ambos sets
+)
+
+train_data <- training(split_obj)
+test_data  <- testing(split_obj)
+
+# Easy check
+nrow(train_data); nrow(test_data)
+
+prop.table(table(train_data$high_traffic_bin))
+prop.table(table(test_data$high_traffic_bin))
+
+# 10 fold CV (just for training, teh 10 fold CV for the tuning 
+# parameters needs to be in each necesarry model *not all models*)
+
+set.seed(123)
+
+cv_folds <- vfold_cv(
+  train_data,
+  v = 10,
+  strata = high_traffic_bin
+)
+
+cv_folds
+```
+
+**1. Split Between Train and Test Set**
+
+The exploratory data analysis provided initial insights into how nutritional characteristics and recipe categories differ between high and low-traffic recipes. While these descriptive patterns are informative, they do not allow for an assessment of predictive performance or generalization to new data. To move from description to prediction, the next step is to formally evaluate models in an out-of-sample setting. For this purpose, the dataset is split into training and test sets. All models are estimated using the training data only, and the test set is reserved for the final out-of-sample evaluation.
+
+The next table summarizes the split of the cleaned dataset into training and test sets, together with the distribution of the outcome variable in each subset. The training set contains 80% of the observations (n = 713), while the remaining 20% are reserved for testing (n = 179). The split is stratified on the outcome variable (high_traffic_bin), so class proportions are preserved across sets and the outcome distribution is not distorted.
+
+```{r}
+# Summary of train-test split and class proportions
+split_summary <- tibble(
+  Dataset = c("Training set (80%)", "Test set (20%)"),
+  Observations = c(nrow(train_data), nrow(test_data)),
+  `High traffic share` = c(
+    mean(train_data$high_traffic_bin == "High"),
+    mean(test_data$high_traffic_bin == "High")
+  ),
+  `Low traffic share` = c(
+    mean(train_data$high_traffic_bin == "Low"),
+    mean(test_data$high_traffic_bin == "Low")
+  )
+) %>%
+  mutate(
+    `High traffic share` = scales::percent(`High traffic share`, accuracy = 0.1),
+    `Low traffic share`  = scales::percent(`Low traffic share`, accuracy = 0.1)
+  )
+
+split_summary %>%
+  kable(
+    caption = "Table 5. Train–test split and outcome distribution",
+    align = "lccc"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+**2. 10-fold CV**
+
+To assess model performance in a robust and stable way, we implement a 10-fold cross-validation procedure using only the training set. In each fold, the training data are split into a temporary training subset and a validation subset, while preserving the distribution of the outcome variable through stratification. This cross-validation framework is used for model assessment and, where applicable, for the selection of tuning parameters.
+
+```{r}
+fold_sizes <- cv_folds %>%
+  mutate(
+    analysis_n  = map_int(splits, ~ nrow(analysis(.x))),
+    assess_n    = map_int(splits, ~ nrow(assessment(.x)))
+  ) %>%
+  transmute(
+    Fold = paste0("Fold ", id),
+    Training_in_fold = analysis_n,
+    Validation_in_fold = assess_n
+  )
+
+fold_sizes %>%
+  kable(caption = "Table 6. Fold sizes in 10-fold cross-validation") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+```
+
+As shown in Table 6, the fold sizes are highly balanced across the cross-validation procedure. Each fold uses approximately 90% of the training data for model estimation (about 641–643 observations) and 10% for validation (about 70–72 observations), with only minor differences due to integer rounding. This ensures that each observation is used for validation exactly once and contributes to training in the remaining folds, supporting reliable and comparable performance estimates.
+
+#### **Linear probability model (LPM) and Logit model**
+
+In this section we estimate two baseline classification models using the training set and evaluate them on the test set.
+
+* The **Linear Probability Model (LPM)** is estimated by OLS and predicts probabilities directly. Its coefficients are easy to interpret as approximate changes in probability, but predicted values may fall outside the [0,1] range.
+* The **Logit model** is estimated by maximum likelihood and guarantees predicted probabilities in [0,1]. Because logit coefficients are in log-odds units, we additionally report **Average Marginal Effects (AME)** to interpret results on the probability scale.
+
+```{r}
+# Libraries needed for Sections 4–5
+
+library(broom)
+library(yardstick)
+library(pROC)
+library(marginaleffects)
+
+# Ensure the outcome is a factor with correct order: Low (0) then High (1)
+
+train_data <- train_data %>%
+mutate(high_traffic_bin = factor(high_traffic_bin, levels = c("Low", "High")))
+
+test_data <- test_data %>%
+mutate(high_traffic_bin = factor(high_traffic_bin, levels = c("Low", "High")))
+
+# Numeric outcome for LPM/Logit (High=1, Low=0)
+
+train_data <- train_data %>% mutate(y_num = ifelse(high_traffic_bin == "High", 1, 0))
+test_data  <- test_data  %>% mutate(y_num = ifelse(high_traffic_bin == "High", 1, 0))
+
+```
+
+**1. LPM estimation (two specifications)**
+
+We estimate two LPM versions: (1) in levels, and (2) log-transformed nutritional variables as a robustness check, giving the next result:
+
+```{r echo=TRUE, results='hide'}
+# LPM formulas
+
+mod_lpm_1 <- y_num ~ calories + carbohydrate + sugar + protein + servings + category
+mod_lpm_2 <- y_num ~ log1p(calories) + log1p(carbohydrate) + log1p(sugar) +
+  log1p(protein) + servings + category
+
+# Fit on training data
+
+lpm_fit1 <- lm(mod_lpm_1, data = train_data)
+lpm_fit2 <- lm(mod_lpm_2, data = train_data)
+```
+
+```{r results='asis', echo=FALSE}
+library(stargazer)
+
+if (knitr::is_latex_output()) {
+
+  # ---------- PDF (LaTeX) ----------
+  cat("\\begin{center}\n")
+
+  stargazer(
+    lpm_fit1, lpm_fit2,
+    dep.var.caption = "",
+    dep.var.labels  = "",
+    omit.table.layout = "n",
+    star.cutoffs = NA,
+    no.space = TRUE,
+    keep.stat = c("rsq", "n"),
+    header = FALSE,
+    column.labels = c("LPM 1", "LPM 2"),
+    title = "Table 7. High traffic (Linear Probability Models)",
+    type = "latex"
+  )
+
+  cat("\\end{center}\n")
+
+} else {
+
+  # ---------- HTML (FORZAR centrado real) ----------
+  html_table <- capture.output(
+    stargazer(
+      lpm_fit1, lpm_fit2,
+      dep.var.caption = "",
+      dep.var.labels  = "",
+      omit.table.layout = "n",
+      star.cutoffs = NA,
+      no.space = TRUE,
+      keep.stat = c("rsq", "n"),
+      header = FALSE,
+      column.labels = c("LPM 1", "LPM 2"),
+      title = "Table 7. High traffic (Linear Probability Models)",
+      type = "html"
+    )
+  )
+
+  # Inyectar CSS directamente en <table>
+  html_table <- gsub(
+    "<table",
+    "<table style='margin-left:auto;margin-right:auto;'",
+    html_table
+  )
+
+  cat(paste(html_table, collapse = "\n"))
+}
+
+```
+
+
+
+
+Table 7 above reports the estimation results for two Linear Probability Models aimed at explaining the probability that a product is classified as *high traffic*. Both specifications include nutritional information and category fixed effects, differing only in the functional form used for the nutritional variables.
+
+First, the results indicate that the models are **empirically meaningful and suitable for analysis**. In both specifications, category indicators exhibit large and precisely estimated coefficients, suggesting that product category is a strong determinant of high traffic status. Categories such as *Vegetable*, *Potato*, and *Pork* are associated with substantially higher predicted probabilities relative to the omitted category, with magnitudes that remain stable across the two models. This stability supports the robustness of the estimated relationships.
+
+Second, the overall explanatory power of the two models is **very similar**. The coefficient of determination is nearly identical (R² = 0.339 for LPM 1 and R² = 0.336 for LPM 2), indicating that introducing logarithmic transformations of nutritional variables does not lead to a meaningful improvement in model fit.
+
+Third, the estimated coefficients on the nutritional variables are **small in magnitude and statistically indistinguishable from zero** in both specifications. Moreover, moving from levels to log-transformations does not alter the sign or relevance of these variables, suggesting that nonlinear effects of nutrients are not a key driver of high traffic once category effects are controlled for.
+
+For these reasons, we choose to work with **LPM 1** in the subsequent analysis. Given its comparable explanatory power, similar qualitative conclusions, and more straightforward interpretation of coefficients, the first specification provides a **parsimonious and transparent framework** without sacrificing empirical relevance. This choice follows the principle of parsimony, favoring the simpler model when additional complexity does not yield substantive gains.
+
+**2. Variable importance based on t-statistics**
+
+The figure below displays the relative importance of the explanatory variables in the Linear Probability Model (LPM 1), measured using the absolute value of their t-statistics. Larger absolute values indicate stronger statistical relevance in predicting high traffic.
+
+
+```{R}
+# Variable importance: t-statistics
+
+temp <- summary(lpm_fit1)
+
+varimp <- tibble(
+variable = rownames(temp$coefficients[-1, ]),  # drop Intercept
+score    = temp$coefficients[-1, 3]            # t-stat
+) %>%
+arrange(desc(abs(score))) %>%
+mutate(variable = factor(variable, levels = variable[order(abs(score))]))
+
+ggplot(varimp, aes(x = variable, y = score)) +
+geom_col() +
+coord_flip() +
+theme_bw() +
+labs(
+title = "Variable importance (t-stat)",
+x = "",
+y = "t-statistic"
+)
+```
+
+The figure above shows that **product category variables dominate the explanatory power** of the model, with the largest (absolute) t-statistics corresponding to categories such as *Vegetable*, *Potato*, *Pork*, and *Meat*. This indicates that category membership is the strongest predictor of high traffic outcomes.
+
+In contrast, **nutritional variables** (calories, carbohydrates, sugar, protein) and *servings* display very small t-statistics, suggesting limited statistical relevance once category effects are controlled for. Overall, the figure reinforces the conclusion that **high traffic is primarily driven by product category rather than nutritional content**, supporting the choice of a parsimonious specification focused on category effects.
+
+
+**3. Predictions**
+
+We now evaluate the predictive performance of the selected Linear Probability Model (LPM 1). First, we generate predicted probabilities and binary class predictions for the training sample using a 0.5 classification threshold. Figure 4 illustrates the relationship between predicted probabilities and the observed high traffic outcome.
+
+
+```{R}
+# Predictions on TRAIN
+
+train_data <- train_data %>%
+mutate(
+pred_prob  = predict(lpm_fit1),
+pred_class = ifelse(pred_prob >= 0.5, 1, 0)
+)
+
+ggplot(train_data, aes(x = pred_prob, y = y_num)) +
+geom_point(alpha = 0.25) +
+geom_line(aes(y = pred_prob), color = "red") +
+labs(
+x = "Predicted probability (LPM)",
+y = "High traffic (0/1)",
+title = "High traffic: LPM predictions (training data)"
+) +
+theme_bw()
+```
+
+The prediction plot above is based on in-sample (training) predictions and is intended for illustrative purposes only. Predictive performance is evaluated using out-of-sample accuracy on the test set.
+The figure shows that the LPM is able to partially discriminate between high and low traffic observations, although with considerable overlap between classes. The plot is therefore useful as a diagnostic tool, but predictive performance should be assessed using out-of-sample metrics.
+
+Next, we assess out-of-sample performance by computing classification accuracy on the test set, again using a 0.5 probability threshold.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Accuracy on TEST using 0.5 threshold
+
+test_data <- test_data %>%
+  mutate(
+    pred_prob  = predict(lpm_fit1, newdata = test_data),
+    pred_class = ifelse(pred_prob >= 0.5, 1, 0)
+  )
+
+mean(test_data$pred_class == test_data$y_num)
+
+```
+
+**Test accuracy (0.5 threshold):**
+
+Using a 0.5 cutoff to convert predicted probabilities into class predictions, the LPM achieves an **out-of-sample accuracy of 0.754** on the test set. This means that the model correctly classifies approximately **75.4%** of observations.
+
+This level of accuracy suggests **moderate predictive performance**: the model captures meaningful signal (consistent with the strong role of category effects), but it is not perfect—some misclassification remains, which is also consistent with the overlap between classes observed in the prediction plot.
+
+Importantly, this figure should be interpreted in context: accuracy depends on the chosen threshold and can be inflated if the classes are imbalanced. For that reason, it is useful to complement accuracy with additional metrics such as a confusion matrix, sensitivity/specificity, or ROC-AUC when needed.
+
+**4. Logit estimation**
+ 
+**Logit model:**
+
+As a robustness check, we estimate a binary response model using a logistic specification. The model includes the same set of covariates as the Linear Probability Model, without interaction terms.
+
+
+```{r echo=TRUE, results='hide'}
+# Logit model specification
+
+mod_logit <- high_traffic_bin ~ calories + carbohydrate + sugar + protein + servings + category
+
+# Fit logit (glm with binomial)
+
+logit_fit <- glm(mod_logit, data = train_data, family = binomial)
+
+```
+
+Table 8 reports the estimated coefficients of the Logit model. In addition to the number of observations, we report the Akaike Information Criterion (AIC) as a measure of model fit.
+
+```{r results='asis', echo=FALSE}
+library(stargazer)
+
+out_type <- if (knitr::is_latex_output()) "latex" else "html"
+
+if (knitr::is_latex_output()) {
+
+  # PDF: centrado LaTeX
+  cat("\\begin{center}\n")
+
+  stargazer(
+    logit_fit,
+    dep.var.caption = "",
+    dep.var.labels  = "",
+    omit.table.layout = "n",
+    star.cutoffs = NA,
+    no.space = TRUE,
+    keep.stat = c("n", "aic"),
+    header = FALSE,
+    column.labels = c("Logit"),
+    title = "Table 8. High traffic (Logit model)",
+    type = "latex"
+  )
+
+  cat("\\end{center}\n")
+
+} else {
+
+  # HTML: FORZAR centrado real de la tabla
+  html_table <- capture.output(
+    stargazer(
+      logit_fit,
+      dep.var.caption = "",
+      dep.var.labels  = "",
+      omit.table.layout = "n",
+      star.cutoffs = NA,
+      no.space = TRUE,
+      keep.stat = c("n", "aic"),
+      header = FALSE,
+      column.labels = c("Logit"),
+      title = "Table 8. High traffic (Logit model)",
+      type = "html"
+    )
+  )
+
+  # Inyectar margin:auto directamente en <table>
+  html_table <- gsub(
+    "<table",
+    "<table style='margin-left:auto;margin-right:auto;'",
+    html_table
+  )
+
+  cat(paste(html_table, collapse = "\n"))
+}
+```
+
+Table 8 reports the estimates from the Logit model explaining the probability that a product is classified as *high traffic*. Overall, the results closely mirror those obtained with the Linear Probability Model, reinforcing the robustness of the main conclusions.
+
+First, the coefficients on the **nutritional variables** (calories, carbohydrates, sugar, protein) and *servings* are small in magnitude and not statistically meaningful. This suggests that, conditional on product category, nutritional content has limited explanatory power for high traffic outcomes, and this finding is consistent with the LPM results.
+
+Second, the **category indicators** exhibit large and precisely estimated coefficients. Categories such as *Vegetable*, *Potato*, *Pork*, and *Meat* are associated with substantially higher log-odds of being high traffic relative to the omitted category. The magnitude of these coefficients increases monotonically across categories, indicating strong heterogeneity in traffic probability driven by product type rather than nutritional composition.
+
+The negative and significant constant reflects a low baseline probability of high traffic for products in the reference category when all covariates are set to zero, which is consistent with the interpretation of the category effects as upward shifts in the likelihood of high traffic.
+
+Finally, the Akaike Information Criterion (AIC) provides a benchmark for model fit in the nonlinear setting. Combined with the similarity of signs and relative magnitudes across LPM and Logit specifications, the results indicate that the choice of functional form does not materially affect the substantive conclusions. This further supports the use of the simpler Linear Probability Model for interpretability, without loss of economic insight.
+
+**5. Logit model: variable importance and predictions**
+
+We complement the Logit estimation by analyzing variable importance based on z-statistics and by evaluating the model’s out-of-sample predictive performance on the test set.
+
+```{R}
+# Variable importance (Logit)
+
+temp <- summary(logit_fit)
+
+varimp_logit <- tibble(
+variable = rownames(temp$coefficients[-1, ]),  # drop Intercept
+score    = temp$coefficients[-1, 3]            # z-stat
+) %>%
+arrange(desc(abs(score))) %>%
+mutate(variable = factor(variable, levels = variable[order(abs(score))]))
+
+ggplot(varimp_logit, aes(x = variable, y = score)) +
+geom_col() +
+coord_flip() +
+theme_bw() +
+labs(
+title = "Variable importance (z-stat)",
+x = "",
+y = "z-statistic"
+)
+```
+
+The figure above shows the relative importance of explanatory variables in the Logit model, measured by the absolute value of their z-statistics. The results indicate that **product category variables overwhelmingly drive the probability of high traffic**, with categories such as *Potato*, *Pork*, *Vegetable*, and *Meat* exhibiting the largest z-statistics.
+
+In contrast, **nutritional variables** (calories, carbohydrates, sugar, protein) and *servings* display much smaller z-statistics and therefore contribute little to explaining high traffic outcomes once category effects are controlled for. This pattern mirrors the findings from the Linear Probability Model and suggests that nutritional content plays a limited role relative to product type.
+
+Overall, the figure reinforces the conclusion that **high traffic is primarily determined by category membership rather than nutritional characteristics**, and that this result is robust across linear and nonlinear model specifications.
+
+Next, we assess the predictive performance of the Logit model on the test sample using a 0.5 probability threshold.
+
+```{R}
+# Predictions on TEST using 0.5 threshold (Logit)
+
+test_data <- test_data %>%
+mutate(
+pred_prob_logit  = predict(logit_fit, newdata = test_data, type = "response"),
+pred_class_logit = ifelse(pred_prob_logit >= 0.5, 1, 0)
+)
+
+mean(test_data$pred_class_logit == ifelse(test_data$high_traffic_bin == "High", 1, 0))
+```
+
+Using a 0.5 probability threshold, the Logit model achieves an **out-of-sample classification accuracy of 0.765** on the test set. This implies that approximately **76.5%** of observations are correctly classified as high or low traffic.
+
+This result indicates **slightly better predictive performance** than the Linear Probability Model, which achieved an accuracy of 75.4%. However, the improvement is modest, suggesting that while the nonlinear specification offers some gains in classification, the main predictive power continues to stem from category effects rather than from the choice of functional form.
+
+Overall, the Logit model provides a small improvement in out-of-sample accuracy, but the substantive conclusions remain unchanged.
+
+Figure below provides a simple diagnostic visualization of the relationship between predicted probabilities and observed outcomes in the test set.
+
+
+```{R}
+# Diagnostic plot (Logit, test data)
+
+ggplot(
+test_data,
+aes(
+x = pred_prob_logit,
+y = ifelse(high_traffic_bin == "High", 1, 0)
+)
+) +
+geom_point(alpha = 0.25) +
+geom_smooth(se = FALSE) +
+labs(
+x = "Predicted probability (Logit)",
+y = "High traffic (0/1)",
+title = "High traffic: Logit predictions (test data)"
+) +
+theme_bw()
+
+```
+
+
+Figure above displays the relationship between predicted probabilities from the Logit model and the observed high traffic outcomes in the test sample. The S-shaped smooth curve reflects the nonlinear nature of the logistic specification, with predicted probabilities increasing monotonically as the model assigns higher likelihood to high traffic observations.
+
+The figure shows that observations with *high traffic = 1* tend to be concentrated at higher predicted probabilities, while those with *high traffic = 0* are more frequent at lower predicted probabilities. This pattern indicates that the Logit model is able to **discriminate between classes**, particularly in the upper range of predicted probabilities.
+
+However, there remains a region of overlap at intermediate probability values, where both outcomes coexist. This highlights residual classification uncertainty and suggests that, while the Logit model improves separation relative to the Linear Probability Model, it does not achieve perfect classification.
+
+Overall, the plot provides visual evidence of the Logit model’s improved probabilistic fit and supports the modest gains in out-of-sample accuracy observed in the test data.
+
+**6. Marginal effects comparison: Logit vs LPM1**
+
+To facilitate interpretation and comparison across models, we compute marginal effects for the Logit specification and compare them with the coefficients from the Linear Probability Model (LPM1). While LPM coefficients can be directly interpreted as marginal effects, the Logit model requires explicit computation.
+
+```{r echo=TRUE, results='hide'}
+# Packages
+library(mfx)
+
+# Logit marginal effects specification
+
+mod_me <- y_num ~ calories + carbohydrate + sugar + protein + servings + category
+
+# Marginal effects
+
+me_logit_atmean  <- mfx::logitmfx(mod_me, data = train_data, atmean = TRUE)
+me_logit_average <- mfx::logitmfx(mod_me, data = train_data, atmean = FALSE)  # AME
+```
+
+We report marginal effects evaluated at the mean of covariates and average marginal effects (AME). Table 9 compares these quantities with the LPM1 coefficients.
+
+```{r results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+
+# Comparison table: Logit ME at mean, Logit AME, LPM1 coefficients
+ME <- cbind(
+  me_logit_atmean$mfxest[, "dF/dx"],
+  me_logit_average$mfxest[, "dF/dx"],
+  coefficients(lpm_fit1)[-1]   # drop intercept
+)
+
+colnames(ME) <- c("Logit ME (at mean)", "Logit AME", "LPM1 coef")
+
+# Center + render properly (HTML vs PDF)
+fmt <- if (knitr::is_latex_output()) "latex" else "html"
+
+if (knitr::is_latex_output()) {
+  cat("\\begin{center}\n")
+} else {
+  cat("<div style='text-align:center;'>\n")
+}
+
+kable(
+  ME,
+  format = fmt,
+  digits = 3,
+  caption = "Table 9. Marginal effects comparison: Logit vs LPM1"
+) %>%
+  kable_styling(full_width = FALSE)
+
+if (knitr::is_latex_output()) {
+  cat("\\end{center}\n")
+} else {
+  cat("</div>\n")
+}
+
+```
+
+Table 9 above compares marginal effects from the Logit model—evaluated at the mean of covariates and averaged across observations (AME)—with the coefficients from the Linear Probability Model (LPM1). Overall, the table reveals a **high degree of consistency in both sign and magnitude across specifications**, supporting the robustness of the results.
+
+For **continuous nutritional variables** (calories, carbohydrates, sugar, protein, and servings), marginal effects are extremely small in absolute value across all three measures. Sugar exhibits a consistently negative effect, while calories, carbohydrates, and protein have positive but economically negligible impacts. The close alignment between Logit AMEs and LPM coefficients indicates that the linear approximation provided by the LPM is accurate in this context.
+
+For **category indicators**, marginal effects are large and economically meaningful. Products in categories such as *Vegetable*, *Potato*, *Pork*, and *Meat* experience increases in the probability of high traffic of roughly **40–50 percentage points** in the Logit AME specification, relative to the reference category. Although LPM coefficients tend to be somewhat larger in magnitude, the **ranking of categories and qualitative conclusions are identical** across models.
+
+Differences between marginal effects evaluated at the mean and average marginal effects are modest, indicating limited nonlinearity in the relevant region of the covariate space. This further explains why Logit AMEs closely track LPM coefficients.
+
+Taken together, the table shows that **the choice between Logit and LPM does not materially affect the economic interpretation of marginal effects**. Given its simplicity and ease of interpretation, the LPM provides a reliable approximation to the nonlinear model in this application.
+
+Finally, we compare variable importance across models using the t-statistics of the estimated marginal effects. For the Logit model, we use the z-statistics associated with the AMEs, while for the LPM we rely on the standard t-statistics of the coefficients.
+
+```{r echo=TRUE, results='hide'}
+# Variable importance based on marginal effects
+
+# LOGIT: z-statistics of AME
+
+me_ame <- me_logit_average$mfxest
+
+varimp_logit_me <- tibble(
+  variable = rownames(me_ame),
+  score    = me_ame[, "z"],
+  model    = "Logit (AME)"
+)
+
+# LPM1: t-statistics of coefficients
+
+temp_lpm <- summary(lpm_fit1)
+
+varimp_lpm <- tibble(
+  variable = rownames(temp_lpm$coefficients[-1, ]),
+  score    = temp_lpm$coefficients[-1, 3],
+  model    = "LPM1"
+)
+
+# Combine and order by overall importance
+
+varimp_all <- bind_rows(varimp_lpm, varimp_logit_me) %>%
+  group_by(variable) %>%
+  mutate(order_score = max(abs(score), na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(order_score), model) %>%
+  mutate(variable = factor(variable, levels = unique(variable)))
+```
+
+```{R}
+# Plot
+
+ggplot(varimp_all, aes(x = variable, y = score, fill = model)) +
+geom_col(position = "dodge") +
+coord_flip() +
+theme_bw() +
+labs(
+title = "Variable importance based on t-statistics of marginal effects",
+subtitle = "Logit: z-statistics of AME; LPM: t-statistics of coefficients",
+x = NULL,
+y = "t-statistic (signed)",
+fill = "Model"
+)
+```
+
+The figure above compares variable importance across the Logit and LPM1 specifications using the t/z-statistics of marginal effects. The figure shows a strikingly consistent pattern across models: **product category variables dominate explanatory power**, while nutritional variables and servings contribute very little.
+
+Across both models, categories such as *Vegetable*, *Potato*, *Pork*, and *Meat* exhibit the largest (absolute) t-statistics, indicating that category membership is the primary driver of high traffic outcomes. Importantly, the **ranking of categories is highly stable** across the Logit (AME) and LPM1 measures, reinforcing the robustness of this result to model specification and functional form.
+
+In contrast, **nutritional variables** (calories, carbohydrates, sugar, protein) and *servings* display very small t-statistics in both models, suggesting limited statistical relevance once category effects are controlled for. This confirms that nutritional composition plays a secondary role relative to product type.
+
+Overall, the figure demonstrates that **the substantive conclusions are invariant to whether marginal effects are derived from a linear or nonlinear model**, providing strong justification for focusing on the simpler LPM specification without loss of interpretability or empirical insight.
+
+
+#### **Random Forest**
+
+As a final robustness and predictive exercise, we estimate a Random Forest classifier. This flexible, nonparametric model allows for nonlinearities and complex interactions between covariates, providing a useful benchmark against the parametric LPM and Logit specifications.
+
+```{R}
+# Packages
+
+library(ranger)
+library(vip)
+
+set.seed(123)
+```
+
+**Model specification:**
+
+We specify a Random Forest model for binary classification. The number of variables considered at each split (`mtry`) and the minimum node size (`min_n`) are treated as tuning parameters. Variable importance is computed using permutation importance.
+
+```{r echo=TRUE}
+# Random Forest specification (classification)
+
+rf_spec <- rand_forest(
+  trees = 1000,
+  mtry  = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("classification")
+```
+
+```{r echo=TRUE, results='hide'}
+# Recipe: convert categorical variables to dummies
+
+rf_rec <- recipe(
+  high_traffic_bin ~ calories + carbohydrate + sugar + protein + servings + category,
+  data = train_data
+) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+```
+
+**Workflow and hyperparameter tuning: **
+
+We combine the model specification and preprocessing steps into a single workflow. Hyperparameters are tuned using 10-fold cross-validation, with model performance evaluated using ROC AUC and accuracy.
+
+```{r echo=TRUE, results='hide'}
+# Workflow
+
+rf_wf <- workflow() %>%
+  add_recipe(rf_rec) %>%
+  add_model(rf_spec)
+
+# Tuning grid
+
+rf_grid <- grid_regular(
+  mtry(range = c(2, 10)),
+  min_n(range = c(2, 25)),
+  levels = 5
+)
+
+# Cross-validated tuning
+
+rf_tuned <- tune_grid(
+  rf_wf,
+  resamples = cv_folds,
+  grid = rf_grid,
+  metrics = metric_set(roc_auc, accuracy)
+)
+```
+
+**Final model selection and estimation:**
+
+The optimal hyperparameters are selected based on ROC AUC. The final Random Forest model is then refit using the full training dataset.
+
+```{r echo=TRUE, results='hide'}
+# Select best hyperparameters by ROC AUC
+
+best_params <- select_best(rf_tuned, metric = "roc_auc")
+
+# Final fit on training data
+
+rf_final_wf  <- finalize_workflow(rf_wf, best_params)
+rf_final_fit <- fit(rf_final_wf, data = train_data)
+
+```
+
+The Random Forest tuning procedure selects a model with a low number of variables considered at each split (`mtry = 2`) and a relatively large minimum node size (`min_n = 25`). This indicates that predictive performance is maximized by relatively shallow trees that rely on a small subset of highly informative variables. These results are consistent with earlier findings from the LPM and Logit models, which showed that category variables dominate explanatory power and that additional model complexity yields limited gains.
+
+
+**Test performance:**
+
+We evaluate the out-of-sample predictive performance of the Random Forest model using the test set. We report both classification accuracy and ROC AUC to provide a comprehensive assessment.
+
+```{r results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(yardstick)
+
+# Test predictions
+rf_test_probs <- predict(rf_final_fit, new_data = test_data, type = "prob")
+rf_test_class <- predict(rf_final_fit, new_data = test_data, type = "class")
+
+rf_test_res <- test_data %>%
+  bind_cols(rf_test_probs, rf_test_class)
+
+# --- Metrics table ---
+metrics_tbl <- metrics(
+  rf_test_res,
+  truth = high_traffic_bin,
+  estimate = .pred_class
+)
+
+# --- ROC AUC ---
+roc_tbl <- roc_auc(
+  rf_test_res,
+  truth = high_traffic_bin,
+  .pred_High,
+  event_level = "second"
+)
+
+# Output format (HTML vs PDF)
+fmt <- if (knitr::is_latex_output()) "latex" else "html"
+
+# ---- CENTER START ----
+if (knitr::is_latex_output()) {
+  cat("\\begin{center}\n")
+} else {
+  cat("<div style='text-align:center;'>\n")
+}
+
+# Accuracy & related metrics
+kable(
+  metrics_tbl,
+  format = fmt,
+  digits = 3,
+  caption = "Table 10. Random Forest test performance (accuracy metrics)"
+) %>%
+  kable_styling(full_width = FALSE)
+
+cat("<br>")
+
+# ROC AUC
+kable(
+  roc_tbl,
+  format = fmt,
+  digits = 3,
+  caption = "Table 11. Random Forest test performance (ROC AUC)"
+) %>%
+  kable_styling(full_width = FALSE)
+
+# ---- CENTER END ----
+if (knitr::is_latex_output()) {
+  cat("\\end{center}\n")
+} else {
+  cat("</div>\n")
+}
+```
+
+**Variable importance:**
+
+Figure bellow reports variable importance from the Random Forest model based on permutation importance, which measures the decrease in predictive performance when each variable is randomly permuted.
+
+```{R}
+# Variable importance (permutation)
+
+rf_engine <- extract_fit_parsnip(rf_final_fit)$fit
+
+vip(rf_engine, num_features = 15) +
+ggtitle("Random Forest variable importance (permutation)")
+
+```
+
+Figure above presents permutation-based variable importance from the Random Forest model. The results indicate that **a small set of variables accounts for most of the model’s predictive power**, with *protein* and category indicators—particularly *Vegetable*, *Potato*, and *Breakfast*—ranking as the most influential predictors.
+
+Consistent with the parametric models, **product category remains a key driver of high traffic outcomes**. Categories such as *Pork*, *Chicken*, and *Meat* also exhibit non-negligible importance, while other categories and nutritional variables contribute more modestly to prediction accuracy.
+
+Interestingly, *protein* emerges as the most important continuous variable in the Random Forest model. This suggests that, while its marginal effect is small in linear and logistic models, **nonlinearities or interactions involving protein may be exploited by the Random Forest**, highlighting the added flexibility of tree-based methods.
+
+Finally, variables such as *servings* display very low importance, indicating limited predictive relevance. Overall, the Random Forest importance rankings align closely with the findings from the LPM and Logit models, reinforcing the conclusion that **high traffic is primarily driven by product category, with limited additional gains from more complex nonlinear models**.
+
+
+**Table 12 presents the top 15 variables ranked by permutation importance.**
+
+```{r results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(tibble)
+
+# Tidy table of variable importance
+rf_vi <- as_tibble(
+  rf_engine$variable.importance,
+  rownames = "variable"
+) %>%
+  rename(importance = value) %>%
+  arrange(desc(importance)) %>%
+  slice_head(n = 15)
+
+# Output format (HTML vs PDF)
+fmt <- if (knitr::is_latex_output()) "latex" else "html"
+
+# ---- CENTER START ----
+if (knitr::is_latex_output()) {
+  cat("\\begin{center}\n")
+} else {
+  cat("<div style='text-align:center;'>\n")
+}
+
+kable(
+  rf_vi,
+  format = fmt,
+  digits = 3,
+  caption = "Table 12. Top 15 variables by permutation importance (Random Forest)"
+) %>%
+  kable_styling(full_width = FALSE)
+
+# ---- CENTER END ----
+if (knitr::is_latex_output()) {
+  cat("\\end{center}\n")
+} else {
+  cat("</div>\n")
+}
+```
+
+
+Table 12 reports the top 15 predictors ranked by permutation importance in the Random Forest model. The importance measure captures the average decrease in predictive performance when each variable is randomly permuted, so higher values indicate greater relevance for prediction.
+
+The table shows that **a small subset of variables concentrates most of the predictive power**. The most important predictor is *protein*, followed very closely by category indicators such as *Vegetable* and *Potato*. This confirms that both nutritional content and product category play a role in prediction, although the latter dominates in terms of economic interpretation.
+
+Several **category variables** (*Breakfast*, *Pork*, *Chicken*, *Meat*) appear among the top predictors, reinforcing earlier results from the LPM and Logit models that category membership is a key determinant of high traffic outcomes. The relative ranking of these categories is consistent with previous variable-importance analyses.
+
+Among **nutritional variables**, *calories*, *sugar*, and *carbohydrate* show modest importance, while *servings* has essentially zero (and slightly negative) importance, indicating no meaningful contribution to predictive accuracy. Negative or near-zero importance values can arise from sampling variability and should be interpreted as lack of predictive relevance.
+
+Overall, Table 10 corroborates earlier findings: **product category explains most of the variation in high traffic**, while nutritional variables add limited incremental predictive power. The Random Forest results therefore support the conclusions drawn from the simpler parametric models, suggesting that increased model flexibility yields only marginal gains.
+
+
+### **6. ***
+
+
+

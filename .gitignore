@@ -1,0 +1,18 @@
+# R sessions and generated intermediates
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*_cache/
+*_files/
+!docs/*_files/
+!docs/*_files/**
+*.utf8.md
+*.knit.md
+Rplots.pdf
+build/
+.Renviron
+.env
+.env.*
+.DS_Store
+Thumbs.db
