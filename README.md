@@ -1,6 +1,12 @@
 # Predicting High Recipe Site Traffic
 
-**[View the rendered report online](https://juanariza-1.github.io/recipe-site-traffic/)**
+[![View the full report](assets/view-report.svg)](https://juanariza-1.github.io/recipe-site-traffic/)
+
+<a href="https://juanariza-1.github.io/recipe-site-traffic/">
+  <img src="assets/report-preview.png" alt="Share of high-traffic recipes by category, from the final report." width="760">
+</a>
+
+*Click the button or preview to open the complete report with its saved figures and results.*
 
 An academic classification project by **Juan Esteban Londoño, Juan Pablo Ariza, and Milan Goossens**. It examines whether recipe nutrition, category, and serving size help predict high website traffic, comparing linear probability models, logistic regression, and a tuned random forest.
 
